@@ -1,7 +1,6 @@
-from datetime import date
 from enum import IntEnum
 
-from pydantic import BaseModel, HttpUrl, SecretStr
+from pydantic import BaseModel, SecretStr
 
 
 class Settings(BaseModel):
@@ -17,8 +16,6 @@ class PhotoIssue(BaseModel):
     """An unassigned Linear issue with a photo/graphic task, as returned by the linear module."""
 
     title: str
-    url: HttpUrl
-    due_date: date | None = None
 
 
 

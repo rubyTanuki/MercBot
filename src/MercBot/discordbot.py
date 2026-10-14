@@ -16,10 +16,10 @@ COMMANDS = [
     },
 ]
 
+POLL_QUESTION = "Which photo tasks do you want to take?"
 POLL_DURATION = datetime.timedelta(days=1)
-POLL_ANSWER = "I want this"
-POLL_ANSWER_EMOJI = "✋"
-POLL_QUESTION_MAX = 300
+POLL_MAX_ANSWERS = 10
+POLL_ANSWER_MAX = 55
 
 EPHEMERAL = 1 << 6
 
@@ -70,8 +70,11 @@ class DiscordBot:
         if not issues:
             await self.edit_status(interaction, "No unassigned photo tasks found.")
             return
-        for issue in issues:
-            await self._send_poll(interaction.channel_id, issue)
+        # Discord caps polls at 10 answers, so larger batches are split across several polls.
+        batches = [issues[i : i + POLL_MAX_ANSWERS] for i in range(0, len(issues), POLL_MAX_ANSWERS)]
+        for n, batch in enumerate(batches, start=1):
+            question = POLL_QUESTION if len(batches) == 1 else f"{POLL_QUESTION} ({n}/{len(batches)})"
+            await self._send_poll(interaction.channel_id, question, batch)
         await self.delete_status(interaction)
 
     async def edit_status(self, interaction: Interaction, content: str) -> None:
@@ -81,15 +84,13 @@ class DiscordBot:
     async def delete_status(self, interaction: Interaction) -> None:
         await self._http.request(self._original_response_route("DELETE", interaction))
 
-    async def _send_poll(self, channel_id: int, issue: PhotoIssue) -> None:
-        question = issue.title
-        if issue.due_date:
-            question += f" (due {issue.due_date:%a %b} {issue.due_date.day})"
-        poll = Poll(question=question[:POLL_QUESTION_MAX], duration=POLL_DURATION)
-        poll.add_answer(text=POLL_ANSWER, emoji=POLL_ANSWER_EMOJI)
+    async def _send_poll(self, channel_id: int, question: str, issues: list[PhotoIssue]) -> None:
+        poll = Poll(question=question, duration=POLL_DURATION, multiple=True)
+        for issue in issues:
+            text = issue.title if len(issue.title) <= POLL_ANSWER_MAX else issue.title[: POLL_ANSWER_MAX - 1] + "…"
+            poll.add_answer(text=text)
 
-        # Masked link with <> so Discord doesn't add a Linear preview embed above the poll.
-        with handle_message_parameters(content=f"[Open in Linear](<{issue.url}>)", poll=poll) as params:
+        with handle_message_parameters(poll=poll) as params:
             await self._http.send_message(channel_id, params=params)
 
     def _original_response_route(self, method: str, interaction: Interaction) -> Route:

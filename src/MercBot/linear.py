@@ -1,23 +1,11 @@
-from datetime import date
-
 from MercBot.models import PhotoIssue
 
-# Placeholder data until the Linear GraphQL integration is built.
+# Placeholder data until the Linear GraphQL integration is built. Titles arrive
+# already stripped of the "Photos - " prefix; the real client should do the same.
 MOCK_ISSUES = [
-    PhotoIssue(
-        title="Homecoming game -photo",
-        url="https://linear.app/example/issue/MER-101/homecoming-game-photo",
-        due_date=date(2026, 10, 18),
-    ),
-    PhotoIssue(
-        title="New faculty headshots -photo",
-        url="https://linear.app/example/issue/MER-104/new-faculty-headshots-photo",
-    ),
-    PhotoIssue(
-        title="Budget explainer infographic -photo",
-        url="https://linear.app/example/issue/MER-109/budget-explainer-infographic-photo",
-        due_date=date(2026, 10, 21),
-    ),
+    PhotoIssue(title="Homecoming game"),
+    PhotoIssue(title="New faculty headshots"),
+    PhotoIssue(title="Budget explainer infographic"),
 ]
 
 

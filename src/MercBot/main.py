@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import sys
 from contextlib import asynccontextmanager
 
 import uvicorn
@@ -107,7 +108,9 @@ def create_app(settings: Settings, linear: LinearClient) -> FastAPI:
             await linear.connect(code, state)
         except ValueError:
             return PlainTextResponse(
-                "This link has expired or was already used. Restart the bot for a new one.", status_code=400
+                "This link has expired or was already used. Generate a new one with "
+                "`python -m MercBot.main linear-link`.",
+                status_code=400,
             )
         log.info("Linear connected")
         return PlainTextResponse("Linear connected. You can close this tab.")
@@ -115,20 +118,30 @@ def create_app(settings: Settings, linear: LinearClient) -> FastAPI:
     return app
 
 
-def main() -> None:
-    logging.basicConfig(level=logging.INFO)
-    settings = load_settings()
+def build_linear(settings: Settings) -> LinearClient:
     store = KVStore(
         settings.cloudflare_account_id,
         settings.cloudflare_kv_namespace_id,
         settings.cloudflare_api_token.get_secret_value(),
     )
-    linear = LinearClient(
+    return LinearClient(
         settings.linear_client_id,
         settings.linear_client_secret.get_secret_value(),
         settings.public_base_url + LINEAR_CALLBACK_PATH,
         store,
     )
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO)
+    settings = load_settings()
+    linear = build_linear(settings)
+
+    # `linear-link` only prints a fresh install link; the running bot's callback completes it via the KV-stored state.
+    if sys.argv[1:] == ["linear-link"]:
+        print(asyncio.run(linear.authorization_url()))
+        return
+
     app = create_app(settings, linear)
     uvicorn.run(app, host=settings.host, port=settings.port)
 

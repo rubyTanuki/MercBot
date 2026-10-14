@@ -20,6 +20,9 @@ POLL_QUESTION = "Which photo tasks do you want to take?"
 POLL_DURATION = datetime.timedelta(days=1)
 POLL_MAX_ANSWERS = 10
 POLL_ANSWER_MAX = 55
+NO_ARTICLE_ANSWER = "No article"
+# One slot per poll is reserved for NO_ARTICLE_ANSWER.
+ISSUES_PER_POLL = POLL_MAX_ANSWERS - 1
 
 EPHEMERAL = 1 << 6
 
@@ -71,7 +74,7 @@ class DiscordBot:
             await self.edit_status(interaction, "No unassigned photo tasks found.")
             return
         # Discord caps polls at 10 answers, so larger batches are split across several polls.
-        batches = [issues[i : i + POLL_MAX_ANSWERS] for i in range(0, len(issues), POLL_MAX_ANSWERS)]
+        batches = [issues[i : i + ISSUES_PER_POLL] for i in range(0, len(issues), ISSUES_PER_POLL)]
         for n, batch in enumerate(batches, start=1):
             question = POLL_QUESTION if len(batches) == 1 else f"{POLL_QUESTION} ({n}/{len(batches)})"
             await self._send_poll(interaction.channel_id, question, batch)
@@ -89,6 +92,7 @@ class DiscordBot:
         for issue in issues:
             text = issue.title if len(issue.title) <= POLL_ANSWER_MAX else issue.title[: POLL_ANSWER_MAX - 1] + "…"
             poll.add_answer(text=text)
+        poll.add_answer(text=NO_ARTICLE_ANSWER)
 
         with handle_message_parameters(poll=poll) as params:
             await self._http.send_message(channel_id, params=params)

@@ -1,3 +1,4 @@
+from datetime import datetime
 from enum import IntEnum
 
 from pydantic import BaseModel, SecretStr
@@ -8,15 +9,29 @@ class Settings(BaseModel):
     discord_public_key: str
     discord_bot_token: SecretStr
     discord_guild_id: int
+    cloudflare_account_id: str
+    cloudflare_kv_namespace_id: str
+    cloudflare_api_token: SecretStr
+    linear_client_id: str
+    linear_client_secret: SecretStr
+    public_base_url: str = "https://discord-dev.tostr.ai"
     host: str = "127.0.0.1"
     port: int = 8787
 
 
 class PhotoIssue(BaseModel):
-    """An unassigned Linear issue with a photo/graphic task, as returned by the linear module."""
+    """An unassigned Linear issue with a photo/graphic task, as returned by the linear module.
+
+    `title` has the "Photos - " prefix already stripped.
+    """
 
     title: str
 
+
+class LinearToken(BaseModel):
+    access_token: str
+    refresh_token: str | None = None
+    expires_at: datetime | None = None
 
 
 class InteractionType(IntEnum):

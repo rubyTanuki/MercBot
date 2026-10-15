@@ -10,24 +10,31 @@ from MercBot.models import Interaction, Issue, PollDraft
 POLL_COMMAND = "poll"
 TAG_OPTION = "tag"
 TAG_MAX_LENGTH = 100
-COMMANDS = [
-    {
-        "name": POLL_COMMAND,
-        "description": "Post a poll of unassigned Linear issues with a given tag",
-        "type": 1,  # CHAT_INPUT
-        "options": [
-            {
-                "name": TAG_OPTION,
-                "description": "Linear label to filter by, e.g. Photography",
-                "type": 3,  # STRING
-                "required": True,
-                "min_length": 1,
-                "max_length": TAG_MAX_LENGTH,
-                "autocomplete": True,
-            },
-        ],
-    },
-]
+MAX_TAG_CHOICES = 25
+
+
+def commands(labels: list[str]) -> list[dict]:
+    """Command definitions. Labels become fixed tag choices, which Discord filters client-side with no
+    round trip; with no labels or more than Discord's 25-choice cap, the tag falls back to free text."""
+    tag_option = {
+        "name": TAG_OPTION,
+        "description": "Linear label to filter by",
+        "type": 3,  # STRING
+        "required": True,
+    }
+    choices = [label for label in labels if len(label) <= TAG_MAX_LENGTH]
+    if 0 < len(choices) <= MAX_TAG_CHOICES:
+        tag_option["choices"] = [{"name": label, "value": label} for label in choices]
+    else:
+        tag_option.update(min_length=1, max_length=TAG_MAX_LENGTH)
+    return [
+        {
+            "name": POLL_COMMAND,
+            "description": "Post a poll of unassigned Linear issues with a given tag",
+            "type": 1,  # CHAT_INPUT
+            "options": [tag_option],
+        },
+    ]
 
 POLL_QUESTION = "Which {tag} tasks do you want to take?"
 POLL_DURATION = datetime.timedelta(days=1)
@@ -45,9 +52,6 @@ CHANNEL_MESSAGE_WITH_SOURCE = 4
 DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE = 5
 DEFERRED_UPDATE_MESSAGE = 6
 UPDATE_MESSAGE = 7
-APPLICATION_COMMAND_AUTOCOMPLETE_RESULT = 8
-
-MAX_AUTOCOMPLETE_CHOICES = 25
 
 # Review message components. custom_id is "<REVIEW_PREFIX>:<action>:<draft id>[:<select index>]".
 REVIEW_PREFIX = "review"
@@ -132,19 +136,6 @@ def _truncate(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-def tag_suggestions(labels: list[str], typed: str) -> dict:
-    """Autocomplete response: labels starting with `typed` first, then ones containing it."""
-    typed = typed.strip().casefold()
-    starts = [label for label in labels if label.casefold().startswith(typed)]
-    contains = [label for label in labels if typed in label.casefold() and label not in starts]
-    choices = [
-        {"name": label, "value": label}
-        for label in starts + contains
-        if len(label) <= TAG_MAX_LENGTH
-    ][:MAX_AUTOCOMPLETE_CHOICES]
-    return {"type": APPLICATION_COMMAND_AUTOCOMPLETE_RESULT, "data": {"choices": choices}}
-
-
 class InteractionVerifier:
     """Checks the ed25519 signature Discord attaches to every interaction request."""
 
@@ -165,10 +156,10 @@ class DiscordBot:
     def __init__(self, http: HTTPClient, application_id: int, guild_id: int):
         self._http = http
         self._application_id = application_id
-        self._guild_id = guild_id
+        self.guild_id = guild_id
 
-    async def register_commands(self) -> None:
-        await self._http.bulk_upsert_guild_commands(self._application_id, self._guild_id, COMMANDS)
+    async def register_commands(self, labels: list[str]) -> None:
+        await self._http.bulk_upsert_guild_commands(self._application_id, self.guild_id, commands(labels))
 
     async def send_polls(self, channel_id: int, tag: str, issues: list[Issue]) -> None:
         # Discord caps polls at 10 answers, so larger batches are split across several polls.

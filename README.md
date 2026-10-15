@@ -5,6 +5,10 @@ on which tasks they want. `/poll tag:Photography` finds every open, unassigned i
 `Photography` (matched case-insensitively) and first shows the invoker a private list with every
 issue ticked; untick any to leave out, then press **Post poll**.
 
+The `tag` option lists the workspace's Linear labels, loaded when the bot starts, so labels
+added in Linear show up after the next restart. With more than 25 labels (Discord's limit) or
+Linear unreachable at startup, `tag` falls back to free text.
+
 ## Setup
 
 ```sh

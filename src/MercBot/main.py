@@ -131,6 +131,17 @@ async def handle_review_component(
     return discordbot.deferred_update()
 
 
+async def register_commands(bot: DiscordBot, linear: LinearClient) -> None:
+    """Register /poll with the workspace's labels as tag choices, falling back to free text."""
+    try:
+        labels = await linear.label_names()
+    except Exception:
+        log.exception("could not load Linear labels; /poll will take a free-text tag")
+        labels = []
+    await bot.register_commands(labels)
+    log.info("registered commands for guild %s with %d tag choices", bot.guild_id, len(labels))
+
+
 def create_app(settings: Settings, linear: LinearClient, drafts: PollDraftStore) -> FastAPI:
     verifier = InteractionVerifier(settings.discord_public_key)
 
@@ -139,10 +150,11 @@ def create_app(settings: Settings, linear: LinearClient, drafts: PollDraftStore)
         http = HTTPClient(asyncio.get_running_loop())
         await http.static_login(settings.discord_bot_token.get_secret_value())
         bot = DiscordBot(http, settings.discord_application_id, settings.discord_guild_id)
-        await bot.register_commands()
-        log.info("registered commands for guild %s", settings.discord_guild_id)
         app.state.bot = bot
-        if not await linear.is_connected():
+        if await linear.is_connected():
+            await register_commands(bot, linear)
+        else:
+            await bot.register_commands([])
             # Printed rather than served so only whoever can see the logs can start the install.
             log.warning("Linear is not connected. Have a workspace admin open: %s", await linear.authorization_url())
         try:
@@ -163,16 +175,6 @@ def create_app(settings: Settings, linear: LinearClient, drafts: PollDraftStore)
         interaction = Interaction.model_validate_json(body)
         if interaction.type == InteractionType.PING:
             return discordbot.pong()
-
-        if interaction.type == InteractionType.APPLICATION_COMMAND_AUTOCOMPLETE and interaction.data:
-            typed = next((o.value for o in interaction.data.options if o.focused), "")
-            try:
-                labels = await linear.label_names()
-            except Exception:
-                # Suggestions are a convenience; free-text tags still work if Linear is unreachable.
-                log.exception("could not load Linear labels for autocomplete")
-                labels = []
-            return discordbot.tag_suggestions(labels, str(typed or ""))
 
         if interaction.type == InteractionType.MESSAGE_COMPONENT and interaction.data:
             return await handle_review_component(request.app.state.bot, drafts, interaction, background)
@@ -203,6 +205,8 @@ def create_app(settings: Settings, linear: LinearClient, drafts: PollDraftStore)
                 status_code=400,
             )
         log.info("Linear connected")
+        # Pick up the workspace's labels as /poll choices without waiting for a restart.
+        await register_commands(app.state.bot, linear)
         return PlainTextResponse("Linear connected. You can close this tab.")
 
     return app

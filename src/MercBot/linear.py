@@ -21,10 +21,6 @@ STATE_TTL_SECONDS = 600
 # Refresh a little early so a token can't expire between the check and the query.
 REFRESH_MARGIN = timedelta(minutes=5)
 
-# Autocomplete must answer within Discord's 3s window, so label names are cached rather than fetched per keystroke.
-LABEL_CACHE_TTL = timedelta(minutes=5)
-LABEL_FETCH_TIMEOUT = 2
-
 # Titles are conventionally "<Category> - <name>", e.g. "Photos - Homecoming game"; polls only need the name.
 CATEGORY_PREFIX_RE = re.compile(r"^\w+\s+-\s+")
 
@@ -48,9 +44,6 @@ class LinearClient:
         self._session = requests.Session()
         self._token: LinearToken | None = None
         self._token_lock = asyncio.Lock()
-        self._labels: list[str] = []
-        self._labels_fetched_at: datetime | None = None
-        self._labels_lock = asyncio.Lock()
 
     async def authorization_url(self) -> str:
         """A one-time link, valid for 10 minutes, for a workspace admin to install the app (acting as itself, read-only)."""
@@ -90,17 +83,12 @@ class LinearClient:
         return [Issue(title=_display_title(node)) for node in nodes]
 
     async def label_names(self) -> list[str]:
-        """Sorted, de-duplicated names of labels that can be put on issues; stale on fetch failure."""
-        async with self._labels_lock:
-            fresh = self._labels_fetched_at and datetime.now(UTC) - self._labels_fetched_at < LABEL_CACHE_TTL
-            if not fresh:
-                token = await self._valid_token()
-                nodes = await asyncio.to_thread(self._query_labels, token.access_token)
-                # Team-scoped labels can share a name; groups can't be applied to issues themselves.
-                names = {node["name"].casefold(): node["name"] for node in nodes if not node["isGroup"]}
-                self._labels = sorted(names.values(), key=str.casefold)
-                self._labels_fetched_at = datetime.now(UTC)
-            return self._labels
+        """Sorted, de-duplicated names of labels that can be put on issues."""
+        token = await self._valid_token()
+        nodes = await asyncio.to_thread(self._query_labels, token.access_token)
+        # Team-scoped labels can share a name; groups can't be applied to issues themselves.
+        names = {node["name"].casefold(): node["name"] for node in nodes if not node["isGroup"]}
+        return sorted(names.values(), key=str.casefold)
 
     async def _valid_token(self) -> LinearToken:
         async with self._token_lock:
@@ -145,7 +133,7 @@ class LinearClient:
         nodes: list[dict] = []
         after = None
         while True:
-            labels = self._graphql(access_token, queries.ISSUE_LABELS, {"after": after}, LABEL_FETCH_TIMEOUT)["issueLabels"]
+            labels = self._graphql(access_token, queries.ISSUE_LABELS, {"after": after}, 15)["issueLabels"]
             nodes.extend(labels["nodes"])
             if not labels["pageInfo"]["hasNextPage"]:
                 return nodes

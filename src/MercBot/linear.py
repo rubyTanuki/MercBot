@@ -1,13 +1,13 @@
 import asyncio
 import re
 import secrets
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from urllib.parse import urlencode
 
 import requests
 
 from MercBot import queries
-from MercBot.models import Issue, LinearToken
+from MercBot.models import CreatedIssue, Issue, LinearLabel, LinearProject, LinearTeam, LinearToken, Workspace
 from MercBot.storage import KVStore
 
 AUTHORIZE_URL = "https://linear.app/oauth/authorize"
@@ -15,6 +15,9 @@ TOKEN_URL = "https://api.linear.app/oauth/token"
 GRAPHQL_URL = "https://api.linear.app/graphql"
 
 TOKEN_KEY = "linear_oauth"
+# /poll only reads; /accept creates issues (sub-issues included).
+SCOPES = "read,issues:create"
+CREATE_SCOPES = ("issues:create", "write")
 # OAuth states live in KV rather than memory so any instance can finish an install another started.
 STATE_KEY_PREFIX = "linear_oauth_state:"
 STATE_TTL_SECONDS = 600
@@ -46,14 +49,14 @@ class LinearClient:
         self._token_lock = asyncio.Lock()
 
     async def authorization_url(self) -> str:
-        """A one-time link, valid for 10 minutes, for a workspace admin to install the app (acting as itself, read-only)."""
+        """A one-time link, valid for 10 minutes, for a workspace admin to install the app (acting as itself)."""
         state = secrets.token_urlsafe(24)
         await self._store.set(STATE_KEY_PREFIX + state, "1", ttl_seconds=STATE_TTL_SECONDS)
         params = {
             "client_id": self._client_id,
             "redirect_uri": self._redirect_uri,
             "response_type": "code",
-            "scope": "read",
+            "scope": SCOPES,
             "actor": "app",
             "state": state,
             "prompt": "consent",
@@ -82,6 +85,65 @@ class LinearClient:
         nodes = await asyncio.to_thread(self._query_issues, token.access_token, label)
         return [Issue(title=_display_title(node)) for node in nodes]
 
+    async def can_create_issues(self) -> bool:
+        """Whether the stored token was granted issue creation; installs from before /accept were read-only."""
+        token = await self._valid_token()
+        return any(token.has_scope(scope) for scope in CREATE_SCOPES)
+
+    async def workspace(self) -> Workspace:
+        """Teams with their labels, plus every project that isn't completed or canceled."""
+        token = await self._valid_token()
+        # Labels come from their own paginated query; nesting them under teams exceeds Linear's complexity limit.
+        data = await asyncio.to_thread(self._graphql, token.access_token, queries.WORKSPACE, {}, 15)
+        label_nodes = await asyncio.to_thread(self._query_labels, token.access_token)
+        teams = {node["key"]: LinearTeam(id=node["id"], key=node["key"], labels=[]) for node in data["teams"]["nodes"]}
+        for node in label_nodes:
+            if node["isGroup"]:
+                continue
+            label = LinearLabel(id=node["id"], name=node["name"])
+            # Workspace-level labels (no team) can go on any team's issues.
+            for team in [teams[node["team"]["key"]]] if node["team"] else teams.values():
+                team.labels.append(label)
+        projects = [
+            LinearProject(
+                id=node["id"],
+                name=node["name"],
+                target_date=node["targetDate"],
+                team_keys=[team["key"] for team in node["teams"]["nodes"]],
+            )
+            for node in data["projects"]["nodes"]
+            if node["state"] not in ("completed", "canceled")
+        ]
+        projects.sort(key=lambda p: (p.target_date is None, p.target_date or date.max, p.name.casefold()))
+        return Workspace(teams=teams, projects=projects)
+
+    async def create_issue(
+        self,
+        *,
+        team_id: str,
+        title: str,
+        description: str | None = None,
+        label_ids: list[str] | None = None,
+        project_id: str | None = None,
+        parent_id: str | None = None,
+    ) -> CreatedIssue:
+        token = await self._valid_token()
+        # Titles and descriptions come from Discord users, so they only ever travel as GraphQL variables.
+        issue_input = {"teamId": team_id, "title": title, "labelIds": label_ids or []}
+        if description:
+            issue_input["description"] = description
+        if project_id:
+            issue_input["projectId"] = project_id
+        if parent_id:
+            issue_input["parentId"] = parent_id
+        data = await asyncio.to_thread(
+            self._graphql, token.access_token, queries.CREATE_ISSUE, {"input": issue_input}, 30
+        )
+        result = data["issueCreate"]
+        if not result["success"] or not result["issue"]:
+            raise RuntimeError(f"Linear did not create issue {title!r}")
+        return CreatedIssue(**result["issue"])
+
     async def label_names(self) -> list[str]:
         """Sorted, de-duplicated names of labels that can be put on issues."""
         token = await self._valid_token()
@@ -96,10 +158,13 @@ class LinearClient:
             if token is None:
                 raise LinearNotConnectedError
             if token.expires_at and token.refresh_token and token.expires_at - REFRESH_MARGIN <= datetime.now(UTC):
-                token = await asyncio.to_thread(
+                refreshed = await asyncio.to_thread(
                     self._request_token,
                     {"grant_type": "refresh_token", "refresh_token": token.refresh_token},
                 )
+                # A refresh keeps the grant's scopes, whether or not the response repeats them.
+                refreshed.scope = refreshed.scope or token.scope
+                token = refreshed
                 await self._save_token(token)
             return token
 
@@ -123,10 +188,12 @@ class LinearClient:
         response.raise_for_status()
         body = response.json()
         expires_in = body.get("expires_in")
+        scope = body.get("scope")
         return LinearToken(
             access_token=body["access_token"],
             refresh_token=body.get("refresh_token"),
             expires_at=datetime.now(UTC) + timedelta(seconds=expires_in) if expires_in else None,
+            scope=" ".join(scope) if isinstance(scope, list) else scope,
         )
 
     def _query_labels(self, access_token: str) -> list[dict]:
@@ -146,6 +213,9 @@ class LinearClient:
             headers={"Authorization": f"Bearer {access_token}"},
             timeout=timeout,
         )
+        if response.status_code == 400:
+            # Linear reports invalid queries and permission problems as 400s with a GraphQL error body.
+            raise RuntimeError(f"Linear GraphQL errors: {response.text[:1000]}")
         response.raise_for_status()
         body = response.json()
         if body.get("errors"):

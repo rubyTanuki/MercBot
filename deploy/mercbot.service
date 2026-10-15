@@ -1,0 +1,16 @@
+[Unit]
+Description=MercBot Discord bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=mercbot
+WorkingDirectory=/opt/mercbot/src
+ExecStart=/opt/mercbot/.venv/bin/python -m MercBot.main
+Restart=always
+RestartSec=5
+# Send log lines to the journal as they happen rather than buffered.
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

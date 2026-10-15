@@ -45,6 +45,10 @@ The bot serves Discord interactions at `POST /mercbot` on port 8787 and register
 come from Linear and are re-synced in the background when a command runs and they're over 10 minutes
 old. With more than 25 labels (Discord's limit) or Linear unreachable, `tag` falls back to free text.
 
+## Deploying
+
+See [docs/deploy-gcp.md](docs/deploy-gcp.md) for running it on a free Google Cloud VM.
+
 ## Connecting Linear
 
 The bot reads Linear and creates issues through an OAuth app installed in the workspace (scopes

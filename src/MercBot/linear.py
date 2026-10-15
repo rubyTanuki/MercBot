@@ -7,7 +7,7 @@ from urllib.parse import urlencode
 import requests
 
 from MercBot import queries
-from MercBot.models import LinearToken, PhotoIssue
+from MercBot.models import Issue, LinearToken
 from MercBot.storage import KVStore
 
 AUTHORIZE_URL = "https://linear.app/oauth/authorize"
@@ -21,8 +21,14 @@ STATE_TTL_SECONDS = 600
 # Refresh a little early so a token can't expire between the check and the query.
 REFRESH_MARGIN = timedelta(minutes=5)
 
-PHOTO_PREFIX = "Photos -"
-PHOTO_PREFIX_RE = re.compile(r"^Photos\s*-\s*", re.IGNORECASE)
+# Titles are conventionally "<Category> - <name>", e.g. "Photos - Homecoming game"; polls only need the name.
+CATEGORY_PREFIX_RE = re.compile(r"^\w+\s+-\s+")
+
+
+def _display_title(node: dict) -> str:
+    # Tasks are often sub-issues named just "Photos" under the article they're for; the article title is what voters need.
+    title = node["parent"]["title"] if node.get("parent") else node["title"]
+    return CATEGORY_PREFIX_RE.sub("", title).strip()
 
 
 class LinearNotConnectedError(Exception):
@@ -70,10 +76,11 @@ class LinearClient:
         async with self._token_lock:
             await self._save_token(token)
 
-    async def fetch_unassigned_photo_issues(self) -> list[PhotoIssue]:
+    async def fetch_unassigned_issues(self, label: str) -> list[Issue]:
+        """Open, unassigned issues carrying `label` (matched case-insensitively by name)."""
         token = await self._valid_token()
-        nodes = await asyncio.to_thread(self._query_photo_issues, token.access_token)
-        return [PhotoIssue(title=PHOTO_PREFIX_RE.sub("", node["title"]).strip()) for node in nodes]
+        nodes = await asyncio.to_thread(self._query_issues, token.access_token, label)
+        return [Issue(title=_display_title(node)) for node in nodes]
 
     async def _valid_token(self) -> LinearToken:
         async with self._token_lock:
@@ -114,13 +121,14 @@ class LinearClient:
             expires_at=datetime.now(UTC) + timedelta(seconds=expires_in) if expires_in else None,
         )
 
-    def _query_photo_issues(self, access_token: str) -> list[dict]:
+    def _query_issues(self, access_token: str, label: str) -> list[dict]:
         nodes: list[dict] = []
         after = None
         while True:
             response = self._session.post(
                 GRAPHQL_URL,
-                json={"query": queries.UNASSIGNED_PHOTO_ISSUES, "variables": {"prefix": PHOTO_PREFIX, "after": after}},
+                # `label` is user input: it only ever travels as a GraphQL variable, never in the query text.
+                json={"query": queries.UNASSIGNED_ISSUES_WITH_LABEL, "variables": {"label": label, "after": after}},
                 headers={"Authorization": f"Bearer {access_token}"},
                 timeout=15,
             )

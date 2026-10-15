@@ -19,10 +19,11 @@ class Settings(BaseModel):
     port: int = 8787
 
 
-class PhotoIssue(BaseModel):
-    """An unassigned Linear issue with a photo/graphic task, as returned by the linear module.
+class Issue(BaseModel):
+    """An unassigned Linear issue, as returned by the linear module.
 
-    `title` has the "Photos - " prefix already stripped.
+    `title` is the parent issue's title for sub-issues, with any leading category prefix like
+    "Photos - " stripped.
     """
 
     title: str
@@ -48,8 +49,17 @@ class InteractionMember(BaseModel):
     roles: list[int] = []
 
 
+class InteractionOption(BaseModel):
+    name: str
+    value: str | int | float | bool | None = None
+
+
 class InteractionData(BaseModel):
     name: str
+    options: list[InteractionOption] = []
+
+    def option(self, name: str) -> str | int | float | bool | None:
+        return next((o.value for o in self.options if o.name == name), None)
 
 
 class Interaction(BaseModel):

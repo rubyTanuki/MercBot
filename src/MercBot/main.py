@@ -37,25 +37,25 @@ def load_settings() -> Settings:
     )
 
 
-def can_run_photo_poll(interaction: Interaction) -> bool:
-    # Any role may run /photo-poll for now; role-based restrictions go here
+def can_run_poll(interaction: Interaction) -> bool:
+    # Any role may run /poll for now; role-based restrictions go here
     # (interaction.member.roles holds the invoker's role ids).
     return True
 
 
-async def run_photo_poll(bot: DiscordBot, linear: LinearClient, interaction: Interaction) -> None:
+async def run_poll(bot: DiscordBot, linear: LinearClient, interaction: Interaction, tag: str) -> None:
     try:
-        issues = await linear.fetch_unassigned_photo_issues()
-        await bot.post_photo_polls(interaction, issues)
+        issues = await linear.fetch_unassigned_issues(tag)
+        await bot.post_polls(interaction, tag, issues)
     except LinearNotConnectedError:
-        log.warning("photo-poll ran before Linear was connected; see the startup log for the connect link")
-        await bot.edit_status(interaction, "Linear isn't connected yet, so no photo tasks could be fetched.")
+        log.warning("/poll ran before Linear was connected; see the startup log for the connect link")
+        await bot.edit_status(interaction, "Linear isn't connected yet, so no tasks could be fetched.")
     except Exception:
-        log.exception("photo-poll failed")
+        log.exception("/poll failed for tag %r", tag)
         try:
-            await bot.edit_status(interaction, "Something went wrong posting photo polls.")
+            await bot.edit_status(interaction, "Something went wrong posting polls.")
         except Exception:
-            log.exception("could not report photo-poll failure to Discord")
+            log.exception("could not report /poll failure to Discord")
 
 
 def create_app(settings: Settings, linear: LinearClient) -> FastAPI:
@@ -91,11 +91,15 @@ def create_app(settings: Settings, linear: LinearClient) -> FastAPI:
         if interaction.type == InteractionType.PING:
             return discordbot.pong()
 
-        if interaction.data and interaction.data.name == discordbot.PHOTO_POLL_COMMAND:
-            if not can_run_photo_poll(interaction):
-                return discordbot.ephemeral_message("You don't have permission to run /photo-poll.")
+        if interaction.data and interaction.data.name == discordbot.POLL_COMMAND:
+            if not can_run_poll(interaction):
+                return discordbot.ephemeral_message("You don't have permission to run /poll.")
+            # Discord enforces the option's length limits client-side; re-check since this is user input.
+            tag = str(interaction.data.option(discordbot.TAG_OPTION) or "").strip()
+            if not tag or len(tag) > discordbot.TAG_MAX_LENGTH:
+                return discordbot.ephemeral_message(f"Give a tag of 1-{discordbot.TAG_MAX_LENGTH} characters.")
             # Background tasks run after the response is sent, keeping us inside Discord's 3s window.
-            background.add_task(run_photo_poll, request.app.state.bot, linear, interaction)
+            background.add_task(run_poll, request.app.state.bot, linear, interaction, tag)
             return discordbot.deferred_ephemeral()
 
         raise HTTPException(status_code=400, detail="unsupported interaction")

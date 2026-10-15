@@ -5,18 +5,30 @@ from discord.http import HTTPClient, Route, handle_message_parameters
 from nacl.exceptions import BadSignatureError
 from nacl.signing import VerifyKey
 
-from MercBot.models import Interaction, PhotoIssue
+from MercBot.models import Interaction, Issue
 
-PHOTO_POLL_COMMAND = "photo-poll"
+POLL_COMMAND = "poll"
+TAG_OPTION = "tag"
+TAG_MAX_LENGTH = 100
 COMMANDS = [
     {
-        "name": PHOTO_POLL_COMMAND,
-        "description": "Post a poll for each unassigned photo task in Linear",
+        "name": POLL_COMMAND,
+        "description": "Post a poll of unassigned Linear issues with a given tag",
         "type": 1,  # CHAT_INPUT
+        "options": [
+            {
+                "name": TAG_OPTION,
+                "description": "Linear label to filter by, e.g. Photography",
+                "type": 3,  # STRING
+                "required": True,
+                "min_length": 1,
+                "max_length": TAG_MAX_LENGTH,
+            },
+        ],
     },
 ]
 
-POLL_QUESTION = "Which photo tasks do you want to take?"
+POLL_QUESTION = "Which {tag} tasks do you want to take?"
 POLL_DURATION = datetime.timedelta(days=1)
 POLL_MAX_ANSWERS = 10
 POLL_ANSWER_MAX = 55
@@ -59,7 +71,7 @@ class InteractionVerifier:
 
 
 class DiscordBot:
-    """REST-only Discord client: registers commands and posts photo polls with the bot token."""
+    """REST-only Discord client: registers commands and posts task polls with the bot token."""
 
     def __init__(self, http: HTTPClient, application_id: int, guild_id: int):
         self._http = http
@@ -69,14 +81,16 @@ class DiscordBot:
     async def register_commands(self) -> None:
         await self._http.bulk_upsert_guild_commands(self._application_id, self._guild_id, COMMANDS)
 
-    async def post_photo_polls(self, interaction: Interaction, issues: list[PhotoIssue]) -> None:
+    async def post_polls(self, interaction: Interaction, tag: str, issues: list[Issue]) -> None:
         if not issues:
-            await self.edit_status(interaction, "No unassigned photo tasks found.")
+            await self.edit_status(interaction, f"No unassigned tasks tagged \"{tag}\" found.")
             return
         # Discord caps polls at 10 answers, so larger batches are split across several polls.
         batches = [issues[i : i + ISSUES_PER_POLL] for i in range(0, len(issues), ISSUES_PER_POLL)]
         for n, batch in enumerate(batches, start=1):
-            question = POLL_QUESTION if len(batches) == 1 else f"{POLL_QUESTION} ({n}/{len(batches)})"
+            question = POLL_QUESTION.format(tag=tag)
+            if len(batches) > 1:
+                question += f" ({n}/{len(batches)})"
             await self._send_poll(interaction.channel_id, question, batch)
         await self.delete_status(interaction)
 
@@ -87,7 +101,7 @@ class DiscordBot:
     async def delete_status(self, interaction: Interaction) -> None:
         await self._http.request(self._original_response_route("DELETE", interaction))
 
-    async def _send_poll(self, channel_id: int, question: str, issues: list[PhotoIssue]) -> None:
+    async def _send_poll(self, channel_id: int, question: str, issues: list[Issue]) -> None:
         poll = Poll(question=question, duration=POLL_DURATION, multiple=True)
         for issue in issues:
             text = issue.title if len(issue.title) <= POLL_ANSWER_MAX else issue.title[: POLL_ANSWER_MAX - 1] + "…"

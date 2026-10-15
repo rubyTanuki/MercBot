@@ -1,7 +1,8 @@
 # MercBot
 
-Discord bot that posts a `/photo-poll` listing unassigned Linear issues titled `Photos - …`,
-so photographers can vote on which tasks they want.
+Discord bot that posts polls of unassigned Linear issues with a given label, so people can vote
+on which tasks they want. `/poll tag:Photography` polls every open, unassigned issue labelled
+`Photography` (matched case-insensitively).
 
 ## Setup
 
@@ -18,7 +19,7 @@ cd src
 ../.venv/bin/python -m MercBot.main
 ```
 
-The bot serves Discord interactions at `POST /mercbot` on port 8787 and registers `/photo-poll`
+The bot serves Discord interactions at `POST /mercbot` on port 8787 and registers `/poll`
 with the guild on every start.
 
 ## Connecting Linear

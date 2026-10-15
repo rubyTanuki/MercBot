@@ -1,3 +1,18 @@
+ISSUE_LABELS = """
+query IssueLabels($after: String) {
+  issueLabels(first: 250, after: $after) {
+    nodes {
+      name
+      isGroup
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}
+"""
+
 UNASSIGNED_ISSUES_WITH_LABEL = """
 query UnassignedIssuesWithLabel($label: String!, $after: String) {
   issues(

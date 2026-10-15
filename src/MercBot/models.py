@@ -38,6 +38,7 @@ class LinearToken(BaseModel):
 class InteractionType(IntEnum):
     PING = 1
     APPLICATION_COMMAND = 2
+    APPLICATION_COMMAND_AUTOCOMPLETE = 4
 
 
 class InteractionUser(BaseModel):
@@ -52,6 +53,7 @@ class InteractionMember(BaseModel):
 class InteractionOption(BaseModel):
     name: str
     value: str | int | float | bool | None = None
+    focused: bool = False
 
 
 class InteractionData(BaseModel):

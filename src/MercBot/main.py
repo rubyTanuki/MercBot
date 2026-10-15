@@ -91,6 +91,16 @@ def create_app(settings: Settings, linear: LinearClient) -> FastAPI:
         if interaction.type == InteractionType.PING:
             return discordbot.pong()
 
+        if interaction.type == InteractionType.APPLICATION_COMMAND_AUTOCOMPLETE and interaction.data:
+            typed = next((o.value for o in interaction.data.options if o.focused), "")
+            try:
+                labels = await linear.label_names()
+            except Exception:
+                # Suggestions are a convenience; free-text tags still work if Linear is unreachable.
+                log.exception("could not load Linear labels for autocomplete")
+                labels = []
+            return discordbot.tag_suggestions(labels, str(typed or ""))
+
         if interaction.data and interaction.data.name == discordbot.POLL_COMMAND:
             if not can_run_poll(interaction):
                 return discordbot.ephemeral_message("You don't have permission to run /poll.")

@@ -23,6 +23,7 @@ COMMANDS = [
                 "required": True,
                 "min_length": 1,
                 "max_length": TAG_MAX_LENGTH,
+                "autocomplete": True,
             },
         ],
     },
@@ -42,6 +43,9 @@ EPHEMERAL = 1 << 6
 PONG = 1
 CHANNEL_MESSAGE_WITH_SOURCE = 4
 DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE = 5
+APPLICATION_COMMAND_AUTOCOMPLETE_RESULT = 8
+
+MAX_AUTOCOMPLETE_CHOICES = 25
 
 
 def pong() -> dict:
@@ -54,6 +58,19 @@ def deferred_ephemeral() -> dict:
 
 def ephemeral_message(content: str) -> dict:
     return {"type": CHANNEL_MESSAGE_WITH_SOURCE, "data": {"content": content, "flags": EPHEMERAL}}
+
+
+def tag_suggestions(labels: list[str], typed: str) -> dict:
+    """Autocomplete response: labels starting with `typed` first, then ones containing it."""
+    typed = typed.strip().casefold()
+    starts = [label for label in labels if label.casefold().startswith(typed)]
+    contains = [label for label in labels if typed in label.casefold() and label not in starts]
+    choices = [
+        {"name": label, "value": label}
+        for label in starts + contains
+        if len(label) <= TAG_MAX_LENGTH
+    ][:MAX_AUTOCOMPLETE_CHOICES]
+    return {"type": APPLICATION_COMMAND_AUTOCOMPLETE_RESULT, "data": {"choices": choices}}
 
 
 class InteractionVerifier:

@@ -2,6 +2,8 @@
 
 Discord bot that turns accepted pitches into Linear issues and polls each team on who takes them.
 
+Using the bot as an editor? See the [command guide](docs/command-usage.md).
+
 ## Workflow
 
 0. For each newspaper issue, someone runs `/create-project date:November 9`, which creates a Linear

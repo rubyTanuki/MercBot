@@ -66,6 +66,19 @@ query UnassignedIssuesWithLabel($label: String!, $after: String) {
 }
 """
 
+CREATE_PROJECT = """
+mutation CreateProject($input: ProjectCreateInput!) {
+  projectCreate(input: $input) {
+    success
+    project {
+      id
+      name
+      url
+    }
+  }
+}
+"""
+
 CREATE_ISSUE = """
 mutation CreateIssue($input: IssueCreateInput!) {
   issueCreate(input: $input) {

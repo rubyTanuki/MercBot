@@ -7,7 +7,7 @@ from urllib.parse import urlencode
 import requests
 
 from MercBot import queries
-from MercBot.models import CreatedIssue, Issue, LinearLabel, LinearProject, LinearTeam, LinearToken, Workspace
+from MercBot.models import CreatedIssue, CreatedProject, Issue, LinearLabel, LinearProject, LinearTeam, LinearToken, Workspace
 from MercBot.storage import KVStore
 
 AUTHORIZE_URL = "https://linear.app/oauth/authorize"
@@ -15,8 +15,9 @@ TOKEN_URL = "https://api.linear.app/oauth/token"
 GRAPHQL_URL = "https://api.linear.app/graphql"
 
 TOKEN_KEY = "linear_oauth"
-# /poll only reads; /accept creates issues (sub-issues included).
-SCOPES = "read,issues:create"
+# /poll only reads; /accept creates issues (sub-issues included); /create-project needs full write,
+# since Linear has no narrower scope for projects.
+SCOPES = "read,write"
 CREATE_SCOPES = ("issues:create", "write")
 # OAuth states live in KV rather than memory so any instance can finish an install another started.
 STATE_KEY_PREFIX = "linear_oauth_state:"
@@ -89,6 +90,21 @@ class LinearClient:
         """Whether the stored token was granted issue creation; installs from before /accept were read-only."""
         token = await self._valid_token()
         return any(token.has_scope(scope) for scope in CREATE_SCOPES)
+
+    async def can_create_projects(self) -> bool:
+        token = await self._valid_token()
+        return token.has_scope("write")
+
+    async def create_project(self, *, name: str, team_ids: list[str], target_date: date) -> CreatedProject:
+        token = await self._valid_token()
+        project_input = {"name": name, "teamIds": team_ids, "targetDate": target_date.isoformat()}
+        data = await asyncio.to_thread(
+            self._graphql, token.access_token, queries.CREATE_PROJECT, {"input": project_input}, 30
+        )
+        result = data["projectCreate"]
+        if not result["success"] or not result["project"]:
+            raise RuntimeError(f"Linear did not create project {name!r}")
+        return CreatedProject(**result["project"])
 
     async def workspace(self) -> Workspace:
         """Teams with their labels, plus every project that isn't completed or canceled."""

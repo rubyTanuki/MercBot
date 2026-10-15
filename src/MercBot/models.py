@@ -68,6 +68,12 @@ class Workspace(BaseModel):
         return [p for p in self.projects if p.target_date is None or p.target_date >= today]
 
 
+class CreatedProject(BaseModel):
+    id: str
+    name: str
+    url: str
+
+
 class CreatedIssue(BaseModel):
     id: str
     identifier: str

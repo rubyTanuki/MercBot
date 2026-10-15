@@ -4,6 +4,9 @@ Discord bot that turns accepted pitches into Linear issues and polls each team o
 
 ## Workflow
 
+0. For each newspaper issue, someone runs `/create-project date:November 9`, which creates a Linear
+   project named "November 9" with that target date, shared by the WRI and VIS teams. Dates like
+   "Nov. 9th", "11/9" and "2026-11-09" work too; without a year it's the next upcoming one.
 1. Writers pitch in the pitches forum: the post title is the article's working title, tagged with its
    section (News, Life and Arts, Sports, Opinion) and `Photography` / `Graphics` if it needs visuals.
 2. Editors tag pitches `Accepted` or `Accepted - Postponed`.
@@ -43,7 +46,7 @@ old. With more than 25 labels (Discord's limit) or Linear unreachable, `tag` fal
 ## Connecting Linear
 
 The bot reads Linear and creates issues through an OAuth app installed in the workspace (scopes
-`read` and `issues:create`). This is a one-time step per workspace: the resulting tokens are stored
+`read` and `write`; Linear has no narrower scope for creating projects). This is a one-time step per workspace: the resulting tokens are stored
 in Cloudflare KV and refreshed automatically, so restarts and redeploys don't need it again. Redo it
 only if the app is revoked in Linear or the bot reports that Linear isn't connected or only has read
 access.

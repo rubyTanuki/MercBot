@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 import secrets
 import sys
 import time
@@ -75,6 +76,38 @@ def can_run_poll(interaction: Interaction) -> bool:
 def can_run_accept(interaction: Interaction) -> bool:
     # Any role may run /accept for now; see can_run_poll.
     return True
+
+
+def can_run_create_project(interaction: Interaction) -> bool:
+    # Any role may run /create-project for now; see can_run_poll.
+    return True
+
+
+DATE_FORMATS_WITH_YEAR = ("%B %d %Y", "%b %d %Y", "%m/%d/%Y", "%m/%d/%y", "%Y-%m-%d")
+DATE_FORMATS_WITHOUT_YEAR = ("%B %d", "%b %d", "%m/%d")
+
+
+def parse_issue_date(text: str, today: date) -> date | None:
+    """Read dates like "November 9", "Nov. 9th", "11/9" or "2026-11-09". Without a year it's the next
+    such date on or after `today`."""
+    text = re.sub(r"(\d+)(st|nd|rd|th)\b", r"\1", text.strip(), flags=re.IGNORECASE)
+    text = " ".join(text.replace(",", " ").replace(".", " ").split())
+    text = re.sub(r"\bsept\b", "sep", text, flags=re.IGNORECASE)
+    for fmt in DATE_FORMATS_WITH_YEAR:
+        try:
+            return datetime.strptime(text, fmt).date()
+        except ValueError:
+            pass
+    # Parsed with an explicit year so Feb 29 isn't checked against strptime's default of 1900.
+    for year in (today.year, today.year + 1):
+        for fmt in DATE_FORMATS_WITHOUT_YEAR:
+            try:
+                parsed = datetime.strptime(f"{text} {year}", f"{fmt} %Y").date()
+            except ValueError:
+                continue
+            if parsed >= today:
+                return parsed
+    return None
 
 
 class CommandSync:
@@ -360,6 +393,42 @@ async def create_accepted_issues(ctx: Context, interaction: Interaction, draft: 
         await report_failure(ctx, interaction, "Something went wrong creating issues. Check Linear before running /accept again.")
 
 
+async def run_create_project(ctx: Context, interaction: Interaction, text: str) -> None:
+    """Create a newspaper issue's Linear project, shared by WRI and VIS, and offer it to /accept."""
+    try:
+        if not await ctx.linear.can_create_projects():
+            await ctx.bot.edit_status(interaction, f"MercBot doesn't have write access to Linear, so it can't create projects. {LINEAR_REAPPROVE}")
+            return
+        when = parse_issue_date(text, ctx.sync.today())
+        if when is None:
+            await ctx.bot.edit_status(interaction, f"Couldn't read \"{text}\" as a date. Try something like November 9.")
+            return
+        name = f"{when:%B} {when.day}"
+        workspace = await ctx.linear.workspace()
+        missing = [key for key in (WRI, VIS) if key not in workspace.teams]
+        if missing:
+            await ctx.bot.edit_status(interaction, f"Linear has no {' or '.join(missing)} team.")
+            return
+        if existing := workspace.project(name):
+            await ctx.bot.edit_status(interaction, f"There's already an open project called **{existing.name}**.")
+            return
+        project = await ctx.linear.create_project(
+            name=name, team_ids=[workspace.teams[WRI].id, workspace.teams[VIS].id], target_date=when
+        )
+        # So the new date shows up in /accept right away.
+        await ctx.sync.sync()
+        await ctx.bot.edit_status(
+            interaction,
+            f"Created [{project.name}]({project.url}) for {WRI} and {VIS}, due {when:%A, %B} {when.day}, {when.year}. "
+            "It's now a /accept date.",
+        )
+    except LinearNotConnectedError:
+        await report_failure(ctx, interaction, f"Linear isn't connected yet. {LINEAR_REAPPROVE}")
+    except Exception:
+        log.exception("/create-project failed for %r", text)
+        await report_failure(ctx, interaction, "Something went wrong creating the project. Check Linear before trying again.")
+
+
 async def dismiss_review(ctx: Context, interaction: Interaction) -> None:
     try:
         await ctx.bot.delete_status(interaction)
@@ -428,8 +497,8 @@ def create_app(settings: Settings, linear: LinearClient, store: KVStore) -> Fast
         # Links are printed rather than served so only whoever can see the logs can start the install.
         if not await linear.is_connected():
             log.warning("Linear is not connected. Have a workspace admin open: %s", await linear.authorization_url())
-        elif not await linear.can_create_issues():
-            log.warning("Linear access is read-only, so /accept can't create issues. Have a workspace admin open: %s",
+        elif not await linear.can_create_projects():
+            log.warning("Linear access lacks write, so /accept or /create-project can't run. Have a workspace admin open: %s",
                         await linear.authorization_url())
         try:
             yield
@@ -477,6 +546,15 @@ def create_app(settings: Settings, linear: LinearClient, store: KVStore) -> Fast
                 return discordbot.ephemeral_message("Pick the newspaper issue to add the pitches to.")
             team = string_option(interaction, discordbot.TEAM_OPTION) or None
             background.add_task(run_accept, ctx, interaction, project, team)
+            return discordbot.deferred_ephemeral()
+
+        if interaction.data.name == discordbot.CREATE_PROJECT_COMMAND:
+            if not can_run_create_project(interaction):
+                return discordbot.ephemeral_message("You don't have permission to run /create-project.")
+            text = string_option(interaction, discordbot.DATE_OPTION)
+            if not text:
+                return discordbot.ephemeral_message("Give the issue date, e.g. November 9.")
+            background.add_task(run_create_project, ctx, interaction, text)
             return discordbot.deferred_ephemeral()
 
         raise HTTPException(status_code=400, detail="unsupported command")

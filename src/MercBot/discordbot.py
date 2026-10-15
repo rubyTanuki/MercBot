@@ -13,6 +13,7 @@ TAG_OPTION = "tag"
 ACCEPT_COMMAND = "accept"
 DATE_OPTION = "date"
 TEAM_OPTION = "team"
+CREATE_PROJECT_COMMAND = "create-project"
 OPTION_MAX_LENGTH = 100
 MAX_CHOICES = 25
 
@@ -49,6 +50,12 @@ def commands(labels: list[str], projects: list[str], sections: list[str]) -> lis
                 _string_option(DATE_OPTION, "Newspaper issue to add the pitches to", projects, required=True, keep_first=True),
                 _string_option(TEAM_OPTION, "Only pitches tagged with this section", sections, required=False, keep_first=False),
             ],
+        },
+        {
+            "name": CREATE_PROJECT_COMMAND,
+            "description": "Create a Linear project for a newspaper issue, shared by WRI and VIS",
+            "type": 1,
+            "options": [_string_option(DATE_OPTION, "Issue date, e.g. November 9", [], required=True, keep_first=False)],
         },
     ]
 

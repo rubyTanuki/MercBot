@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import secrets
 import sys
 from contextlib import asynccontextmanager
 
@@ -13,8 +14,8 @@ from fastapi.responses import PlainTextResponse
 from MercBot import discordbot
 from MercBot.discordbot import DiscordBot, InteractionVerifier
 from MercBot.linear import LinearClient, LinearNotConnectedError
-from MercBot.models import Interaction, InteractionType, Settings
-from MercBot.storage import KVStore
+from MercBot.models import Interaction, InteractionType, Issue, PollDraft, Settings
+from MercBot.storage import KVStore, PollDraftStore
 
 log = logging.getLogger("mercbot")
 
@@ -43,10 +44,27 @@ def can_run_poll(interaction: Interaction) -> bool:
     return True
 
 
-async def run_poll(bot: DiscordBot, linear: LinearClient, interaction: Interaction, tag: str) -> None:
+async def run_poll(
+    bot: DiscordBot, linear: LinearClient, drafts: PollDraftStore, interaction: Interaction, tag: str
+) -> None:
+    """Fetch the tagged issues and show the invoker a review message to pick which go in the poll."""
     try:
         issues = await linear.fetch_unassigned_issues(tag)
-        await bot.post_polls(interaction, tag, issues)
+        if not issues:
+            await bot.edit_status(interaction, f"No unassigned tasks tagged \"{tag}\" found.")
+            return
+        titles = [issue.title for issue in issues[: discordbot.MAX_REVIEW_ISSUES]]
+        draft = PollDraft(
+            tag=tag,
+            channel_id=interaction.channel_id,
+            user_id=interaction.user_id,
+            titles=titles,
+            selected=list(range(len(titles))),
+        )
+        draft_id = secrets.token_urlsafe(12)
+        await drafts.save(draft_id, draft)
+        truncated = len(issues) > len(titles)
+        await bot.edit_original(interaction, discordbot.review_message(draft_id, draft, truncated))
     except LinearNotConnectedError:
         log.warning("/poll ran before Linear was connected; see the startup log for the connect link")
         await bot.edit_status(interaction, "Linear isn't connected yet, so no tasks could be fetched.")
@@ -58,7 +76,62 @@ async def run_poll(bot: DiscordBot, linear: LinearClient, interaction: Interacti
             log.exception("could not report /poll failure to Discord")
 
 
-def create_app(settings: Settings, linear: LinearClient) -> FastAPI:
+async def post_reviewed_poll(bot: DiscordBot, interaction: Interaction, draft: PollDraft) -> None:
+    try:
+        issues = [Issue(title=draft.titles[i]) for i in draft.selected]
+        await bot.send_polls(draft.channel_id, draft.tag, issues)
+        await bot.delete_status(interaction)
+    except Exception:
+        log.exception("posting reviewed poll failed for tag %r", draft.tag)
+        try:
+            await bot.edit_status(interaction, "Something went wrong posting polls.")
+        except Exception:
+            log.exception("could not report poll failure to Discord")
+
+
+async def dismiss_review(bot: DiscordBot, interaction: Interaction) -> None:
+    try:
+        await bot.delete_status(interaction)
+    except Exception:
+        log.exception("could not delete review message")
+
+
+async def handle_review_component(
+    bot: DiscordBot, drafts: PollDraftStore, interaction: Interaction, background: BackgroundTasks
+) -> dict:
+    parsed = discordbot.parse_review_id(interaction.data.custom_id or "")
+    if parsed is None:
+        raise HTTPException(status_code=400, detail="unknown component")
+    action, draft_id, select_index = parsed
+
+    draft = await drafts.get(draft_id)
+    if draft is None:
+        return discordbot.update_message("This selection expired. Run /poll again.")
+    if interaction.user_id != draft.user_id:
+        return discordbot.ephemeral_message("Only the person who ran /poll can change this.")
+
+    if action == discordbot.REVIEW_SELECT:
+        # Each select reports only its own ticks, so merge them into the draft's full selection.
+        start = select_index * discordbot.SELECT_MAX_OPTIONS
+        in_select = set(range(start, min(start + discordbot.SELECT_MAX_OPTIONS, len(draft.titles))))
+        ticked = {int(v) for v in interaction.data.values if v.isdigit()} & in_select
+        draft.selected = sorted((set(draft.selected) - in_select) | ticked)
+        await drafts.save(draft_id, draft)
+        return discordbot.deferred_update()
+
+    if action == discordbot.REVIEW_POST:
+        if not draft.selected:
+            return discordbot.ephemeral_message("Tick at least one task first.")
+        await drafts.delete(draft_id)
+        background.add_task(post_reviewed_poll, bot, interaction, draft)
+        return discordbot.deferred_update()
+
+    await drafts.delete(draft_id)
+    background.add_task(dismiss_review, bot, interaction)
+    return discordbot.deferred_update()
+
+
+def create_app(settings: Settings, linear: LinearClient, drafts: PollDraftStore) -> FastAPI:
     verifier = InteractionVerifier(settings.discord_public_key)
 
     @asynccontextmanager
@@ -101,6 +174,9 @@ def create_app(settings: Settings, linear: LinearClient) -> FastAPI:
                 labels = []
             return discordbot.tag_suggestions(labels, str(typed or ""))
 
+        if interaction.type == InteractionType.MESSAGE_COMPONENT and interaction.data:
+            return await handle_review_component(request.app.state.bot, drafts, interaction, background)
+
         if interaction.data and interaction.data.name == discordbot.POLL_COMMAND:
             if not can_run_poll(interaction):
                 return discordbot.ephemeral_message("You don't have permission to run /poll.")
@@ -109,7 +185,7 @@ def create_app(settings: Settings, linear: LinearClient) -> FastAPI:
             if not tag or len(tag) > discordbot.TAG_MAX_LENGTH:
                 return discordbot.ephemeral_message(f"Give a tag of 1-{discordbot.TAG_MAX_LENGTH} characters.")
             # Background tasks run after the response is sent, keeping us inside Discord's 3s window.
-            background.add_task(run_poll, request.app.state.bot, linear, interaction, tag)
+            background.add_task(run_poll, request.app.state.bot, linear, drafts, interaction, tag)
             return discordbot.deferred_ephemeral()
 
         raise HTTPException(status_code=400, detail="unsupported interaction")
@@ -132,12 +208,15 @@ def create_app(settings: Settings, linear: LinearClient) -> FastAPI:
     return app
 
 
-def build_linear(settings: Settings) -> LinearClient:
-    store = KVStore(
+def build_store(settings: Settings) -> KVStore:
+    return KVStore(
         settings.cloudflare_account_id,
         settings.cloudflare_kv_namespace_id,
         settings.cloudflare_api_token.get_secret_value(),
     )
+
+
+def build_linear(settings: Settings, store: KVStore) -> LinearClient:
     return LinearClient(
         settings.linear_client_id,
         settings.linear_client_secret.get_secret_value(),
@@ -149,14 +228,15 @@ def build_linear(settings: Settings) -> LinearClient:
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
     settings = load_settings()
-    linear = build_linear(settings)
+    store = build_store(settings)
+    linear = build_linear(settings, store)
 
     # `linear-link` only prints a fresh install link; the running bot's callback completes it via the KV-stored state.
     if sys.argv[1:] == ["linear-link"]:
         print(asyncio.run(linear.authorization_url()))
         return
 
-    app = create_app(settings, linear)
+    app = create_app(settings, linear, PollDraftStore(store))
     uvicorn.run(app, host=settings.host, port=settings.port)
 
 

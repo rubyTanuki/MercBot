@@ -29,6 +29,16 @@ class Issue(BaseModel):
     title: str
 
 
+class PollDraft(BaseModel):
+    """A /poll awaiting review: the issues found and which of them the invoker still has ticked."""
+
+    tag: str
+    channel_id: int
+    user_id: int
+    titles: list[str]
+    selected: list[int]
+
+
 class LinearToken(BaseModel):
     access_token: str
     refresh_token: str | None = None
@@ -38,6 +48,7 @@ class LinearToken(BaseModel):
 class InteractionType(IntEnum):
     PING = 1
     APPLICATION_COMMAND = 2
+    MESSAGE_COMPONENT = 3
     APPLICATION_COMMAND_AUTOCOMPLETE = 4
 
 
@@ -57,8 +68,10 @@ class InteractionOption(BaseModel):
 
 
 class InteractionData(BaseModel):
-    name: str
+    name: str | None = None  # set for commands and autocomplete
     options: list[InteractionOption] = []
+    custom_id: str | None = None  # set for message components
+    values: list[str] = []  # selected option values for select menus
 
     def option(self, name: str) -> str | int | float | bool | None:
         return next((o.value for o in self.options if o.name == name), None)
@@ -74,3 +87,7 @@ class Interaction(BaseModel):
     channel_id: int | None = None
     member: InteractionMember | None = None
     data: InteractionData | None = None
+
+    @property
+    def user_id(self) -> int | None:
+        return self.member.user.id if self.member else None

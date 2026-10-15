@@ -1,8 +1,9 @@
 # MercBot
 
 Discord bot that posts polls of unassigned Linear issues with a given label, so people can vote
-on which tasks they want. `/poll tag:Photography` polls every open, unassigned issue labelled
-`Photography` (matched case-insensitively).
+on which tasks they want. `/poll tag:Photography` finds every open, unassigned issue labelled
+`Photography` (matched case-insensitively) and first shows the invoker a private list with every
+issue ticked; untick any to leave out, then press **Post poll**.
 
 ## Setup
 

@@ -14,7 +14,14 @@ Commands marked **(Mac)** run on your laptop; **(server)** run on the VM over SS
    brew install --cask google-cloud-sdk
    gcloud init        # sign in, then pick or create a project for MercBot
    gcloud services enable compute.googleapis.com
+   gcloud config set compute/zone us-central1-a
    ```
+
+   Project IDs are unique across all of Google Cloud, so a plain name like `mercbot` is usually
+   taken; creating the project in the Cloud Console suggests a free ID (e.g. `mercbot-511703`).
+   The project needs a billing account linked before Compute Engine can be enabled
+   (**Billing → Link a billing account**). `gcloud init` printing a Compute Engine
+   `SERVICE_DISABLED` error is expected before the `services enable` step and can be ignored.
 
 2. In the Cloud Console, go to **Billing → Budgets & alerts** and create a budget of **$1** with
    email alerts, so anything that does start costing money is caught early.
@@ -75,8 +82,8 @@ Commands marked **(Mac)** run on your laptop; **(server)** run on the VM over SS
 
    sudo mkdir -p /etc/cloudflared
    sudo install -m 600 /tmp/<TUNNEL-ID>.json /etc/cloudflared/
-   sudo cp deploy/cloudflared-config.yml /etc/cloudflared/config.yml
-   sudo sed -i 's/<TUNNEL-ID>/<the real id>/' /etc/cloudflared/config.yml
+   tunnel_id=$(basename /etc/cloudflared/*.json .json)
+   sed "s/<TUNNEL-ID>/$tunnel_id/" deploy/cloudflared-config.yml | sudo tee /etc/cloudflared/config.yml
    rm /tmp/.env /tmp/<TUNNEL-ID>.json
    ```
 
@@ -95,15 +102,18 @@ between them, and the bot on whichever one isn't running would make Discord comm
    sudo systemctl enable --now cloudflared
    ```
 
-3. **(server)** Check the bot started and registered its commands:
+3. **(server)** Check the tunnel is connected: `sudo journalctl -u cloudflared -n 20 --no-pager`
+   should show `Registered tunnel connection`. If the public URL returns HTTP 530, no machine is
+   connected to the tunnel.
+4. **(server)** Check the bot started and registered its commands:
 
    ```sh
    journalctl -u mercbot -n 30 --no-pager
    ```
 
    You should see `registered commands in 2 server(s)` and `Uvicorn running on http://127.0.0.1:8787`.
-4. Run `/poll` in Discord to confirm it answers.
-5. After a day, check **Billing → Reports** shows $0.00. If anything shows a charge (the VM's
+5. Run `/poll` in Discord to confirm it answers.
+6. After a day, check **Billing → Reports** shows $0.00. If anything shows a charge (the VM's
    public IP is the most likely candidate), it'll be listed there.
 
 ## Day to day

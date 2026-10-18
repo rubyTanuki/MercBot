@@ -82,10 +82,12 @@ Commands marked **(Mac)** run on your laptop; **(server)** run on the VM over SS
 
    sudo mkdir -p /etc/cloudflared
    sudo install -m 600 /tmp/<TUNNEL-ID>.json /etc/cloudflared/
-   tunnel_id=$(basename /etc/cloudflared/*.json .json)
-   sed "s/<TUNNEL-ID>/$tunnel_id/" deploy/cloudflared-config.yml | sudo tee /etc/cloudflared/config.yml
+   tunnel_id=$(sudo sh -c 'basename /etc/cloudflared/*.json .json')
+   sudo sed "s/<TUNNEL-ID>/$tunnel_id/" /opt/mercbot/deploy/cloudflared-config.yml | sudo tee /etc/cloudflared/config.yml
    rm /tmp/.env /tmp/<TUNNEL-ID>.json
    ```
+
+Paste these one line at a time: a pasted block keeps going after a failed line, so errors are easy to miss.
 
 ## 3. Switch over from the laptop
 

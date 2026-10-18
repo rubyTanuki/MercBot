@@ -26,7 +26,7 @@ For a pitch to come through correctly, its forum post needs:
 - **Body:** the pitch itself. It becomes the issue's description, along with the pitcher's name and
   a link back to the post.
 - **Tags:**
-  - its section: `News`, `Life and Arts`, `Sports` or `Opinion`;
+  - its section: `News`, `Life and Arts`, `Sports`, `Opinion` or `Comics`;
   - `Photography` and/or `Graphics` if the story needs visuals.
 
 Editors add the acceptance tags:
@@ -71,8 +71,8 @@ You'll get a private list of every accepted pitch that doesn't have issues yet, 
 
 For each ticked pitch, MercBot:
 
-1. creates a **Writers** issue with the pitch's title, body and section label, in that newspaper
-   issue's project;
+1. creates an issue with the pitch's title, body and section label, in that newspaper issue's
+   project. It goes to the section's team: **Writers** for most sections, **Visuals** for Comics;
 2. creates a **Visuals** sub-issue with the same title for each `Photography` or `Graphics` tag;
 3. replies in the pitch's thread with links to the new issues, so the writer can see where it went.
 

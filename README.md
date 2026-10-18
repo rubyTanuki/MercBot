@@ -10,11 +10,11 @@ Using the bot as an editor? See the [command guide](docs/command-usage.md).
    project named "November 9" with that target date, shared by the WRI and VIS teams. Dates like
    "Nov. 9th", "11/9" and "2026-11-09" work too; without a year it's the next upcoming one.
 1. Writers pitch in the pitches forum: the post title is the article's working title, tagged with its
-   section (News, Life and Arts, Sports, Opinion) and `Photography` / `Graphics` if it needs visuals.
+   section (News, Life and Arts, Sports, Opinion, Comics) and `Photography` / `Graphics` if it needs visuals.
 2. Editors tag pitches `Accepted` or `Accepted - Postponed`.
 3. An editor runs `/accept date:<newspaper issue> [team:<section>]`, reviews the private list
    (accepted pitches start ticked, postponed ones unticked) and presses **Create issues**. Each ticked
-   pitch becomes a WRI issue in that newspaper issue's Linear project, with the post as its
+   pitch becomes a main issue (in its section's team) in that newspaper issue's Linear project, with the post as its
    description, plus a VIS sub-issue for each visual tag. The thread gets a reply linking them.
    Unticked pitches stay queued for a later `/accept`; pitches that already have issues are never
    offered again.
@@ -44,6 +44,10 @@ The bot serves Discord interactions at `POST /mercbot` on port 8787 and register
 `/accept` in every server listed in `DISCORD_GUILD_ID` (comma-separated) on start. Command choices
 come from Linear and are re-synced in the background when a command runs and they're over 10 minutes
 old. With more than 25 labels (Discord's limit) or Linear unreachable, `tag` falls back to free text.
+
+Which labels count as sections or visuals (`ACCEPT_SECTIONS`, `ACCEPT_VISUALS`), team keys, forum tag
+names, the pitch window and the timezone are optional settings in `.env`;
+see `.env.example` for them and their defaults.
 
 ## Deploying
 

@@ -17,6 +17,18 @@ class Settings(BaseModel):
     linear_client_id: str
     linear_client_secret: SecretStr
     public_base_url: str = "https://discord-dev.tostr.ai"
+    # Linear team keys. Pitches without a section tag go in the writers team; projects include both.
+    writers_team_key: str = "WRI"
+    visuals_team_key: str = "VIS"
+    # Labels that make a pitch's main issue (and are /accept's `team` choices), and labels that add a
+    # sub-issue, each in whichever team has it. Unset: the writers team's labels, and the visuals team's.
+    accept_sections: list[str] | None = None
+    accept_visuals: list[str] | None = None
+    # Pitch forum tags /accept looks for (case-insensitive); postponed pitches start unticked.
+    accepted_tag: str = "Accepted"
+    postponed_tag: str = "Accepted - Postponed"
+    # How far back /accept looks for pitch threads, by creation date.
+    pitch_window_days: int = 90
     # Decides when a newspaper issue's project stops being offered to /accept (after its target date here).
     timezone: str = "America/Chicago"
     host: str = "127.0.0.1"
@@ -85,8 +97,9 @@ class Pitch(BaseModel):
 
     thread_id: int
     title: str
-    wri_labels: list[str]
-    vis_labels: list[str]
+    team_key: str  # the main issue's team
+    section_labels: list[str]
+    visual_labels: list[str]
     deferred: bool
 
 

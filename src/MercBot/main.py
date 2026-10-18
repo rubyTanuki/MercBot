@@ -25,7 +25,9 @@ from MercBot.models import (
     Interaction,
     InteractionType,
     Issue,
+    LinearLabel,
     LinearProject,
+    LinearTeam,
     Pitch,
     ReviewDraft,
     ReviewOption,
@@ -39,15 +41,30 @@ log = logging.getLogger("mercbot")
 INTERACTIONS_PATH = "/mercbot"
 LINEAR_CALLBACK_PATH = "/mercbot/linear/callback"
 
-# Linear team keys: pitches become WRI issues, with VIS sub-issues for their photo/graphic tags.
-WRI, VIS = "WRI", "VIS"
-# Forum tag names, matched case-insensitively.
-ACCEPTED_TAG, DEFERRED_TAG = "accepted", "accepted - postponed"
-# How far back /accept looks for pitch threads, by creation date.
-PITCH_WINDOW = timedelta(days=90)
 # Command choices come from Linear; any command run re-syncs them in the background once they're this old.
 COMMAND_SYNC_INTERVAL = timedelta(minutes=10)
 LINEAR_REAPPROVE = "Ask a Linear admin to approve it again with `python -m MercBot.main linear-link`."
+
+
+OPTIONAL_SETTINGS = {
+    "writers_team_key": "WRITERS_TEAM_KEY",
+    "visuals_team_key": "VISUALS_TEAM_KEY",
+    "accepted_tag": "ACCEPTED_TAG",
+    "postponed_tag": "POSTPONED_TAG",
+    "pitch_window_days": "PITCH_WINDOW_DAYS",
+    "timezone": "TIMEZONE",
+    "accept_sections": "ACCEPT_SECTIONS",
+    "accept_visuals": "ACCEPT_VISUALS",
+    "public_base_url": "PUBLIC_BASE_URL",
+}
+
+
+LIST_SETTINGS = {"accept_sections", "accept_visuals"}
+
+
+def _env_value(field: str, raw: str) -> str | list[str]:
+    # List settings are comma-separated, e.g. ACCEPT_SECTIONS=News,Life and Arts,Comics
+    return [item.strip() for item in raw.split(",") if item.strip()] if field in LIST_SETTINGS else raw
 
 
 def load_settings() -> Settings:
@@ -64,6 +81,8 @@ def load_settings() -> Settings:
         cloudflare_api_token=os.environ["CLOUDFLARE_API_TOKEN"],
         linear_client_id=os.environ["LINEAR_CLIENT_ID"],
         linear_client_secret=os.environ["LINEAR_CLIENT_SECRET"],
+        # Optional; unset ones keep Settings' defaults.
+        **{field: _env_value(field, os.environ[env]) for field, env in OPTIONAL_SETTINGS.items() if os.environ.get(env)},
     )
 
 
@@ -111,12 +130,13 @@ def parse_issue_date(text: str, today: date) -> date | None:
 
 
 class CommandSync:
-    """Keeps command choices (labels, upcoming projects, WRI sections) in step with Linear."""
+    """Keeps command choices (labels, upcoming projects, /accept sections) in step with Linear."""
 
-    def __init__(self, bot: DiscordBot, linear: LinearClient, timezone: str):
+    def __init__(self, bot: DiscordBot, linear: LinearClient, settings: Settings):
         self._bot = bot
         self._linear = linear
-        self._timezone = ZoneInfo(timezone)
+        self._settings = settings
+        self._timezone = ZoneInfo(settings.timezone)
         self._lock = asyncio.Lock()
         self._registered: list[dict] | None = None
         self._synced_at = float("-inf")
@@ -138,7 +158,7 @@ class CommandSync:
                 log.exception("could not load Linear choices; commands will take free text")
                 labels, workspace = [], Workspace(teams={}, projects=[])
             projects = [p.name for p in workspace.upcoming_projects(self.today())]
-            sections = [label.name for label in workspace.teams[WRI].labels] if WRI in workspace.teams else []
+            sections = [label.name for _, label in accept_labels(self._settings, workspace).sections.values()]
             definitions = discordbot.commands(labels, projects, sections)
             # Only re-register on change, since every registration is a write against Discord's command limits.
             if force or definitions != self._registered:
@@ -222,37 +242,82 @@ async def post_reviewed_poll(ctx: Context, interaction: Interaction, draft: Revi
         await report_failure(ctx, interaction, "Something went wrong posting polls.")
 
 
-def find_pitches(workspace: Workspace, threads: list[dict], tags: dict[str, str], done: set[int], team: str | None) -> list[Pitch]:
+@dataclass
+class AcceptLabels:
+    """Which Linear labels make a pitch's main issue (sections) and which add sub-issues (visuals), with the
+    team each label lives in. Keyed by casefolded name; sections keep their configured order."""
+
+    sections: dict[str, tuple[LinearTeam, LinearLabel]]
+    visuals: dict[str, tuple[LinearTeam, LinearLabel]]
+
+    def teams(self) -> dict[str, LinearTeam]:
+        return {team.key: team for team, _ in [*self.sections.values(), *self.visuals.values()]}
+
+
+def accept_labels(settings: Settings, workspace: Workspace) -> AcceptLabels:
+    """Resolve ACCEPT_SECTIONS / ACCEPT_VISUALS to Linear labels in whichever team has them. Unset, sections
+    are the writers team's labels and visuals the visuals team's other labels."""
+
+    def resolve(names: list[str], prefer: str) -> dict[str, tuple[LinearTeam, LinearLabel]]:
+        # A name in several teams resolves to the preferred team first.
+        teams = sorted(workspace.teams.values(), key=lambda t: t.key != prefer)
+        found = {}
+        for name in names:
+            hit = next(((team, label) for team in teams if (label := team.label(name))), None)
+            if hit is None:
+                log.warning("no Linear label called %r for /accept", name)
+            else:
+                found.setdefault(name.casefold(), hit)
+        return found
+
+    writers = workspace.teams.get(settings.writers_team_key)
+    visuals = workspace.teams.get(settings.visuals_team_key)
+    section_names = settings.accept_sections
+    if section_names is None:
+        section_names = [label.name for label in writers.labels] if writers else []
+    sections = resolve(section_names, settings.writers_team_key)
+    visual_names = settings.accept_visuals
+    if visual_names is None:
+        visual_names = [label.name for label in visuals.labels if label.name.casefold() not in sections] if visuals else []
+    return AcceptLabels(sections=sections, visuals=resolve(visual_names, settings.visuals_team_key))
+
+
+def find_pitches(
+    settings: Settings, labels: AcceptLabels, threads: list[dict], tags: dict[str, str], done: set[int], team: str | None
+) -> list[Pitch]:
     """Accepted pitch threads without issues yet, newest first, with their tags mapped to Linear labels."""
-    wri, vis = workspace.teams[WRI], workspace.teams.get(VIS)
+    # Forum tag names are matched case-insensitively.
+    accepted, postponed = settings.accepted_tag.casefold(), settings.postponed_tag.casefold()
     pitches = []
     for thread in sorted(threads, key=lambda t: int(t["id"]), reverse=True):
         if int(thread["id"]) in done:
             continue
         names = [tags[tag_id] for tag_id in thread.get("applied_tags", []) if tag_id in tags]
-        folded = {name.casefold() for name in names}
-        if ACCEPTED_TAG not in folded and DEFERRED_TAG not in folded:
+        folded = [name.casefold() for name in names]
+        if accepted not in folded and postponed not in folded:
             continue
         if team and team.casefold() not in folded:
             continue
-        wri_labels = [wri.label(team).name] if team else [label.name for n in names if (label := wri.label(n))]
-        vis_labels = [label.name for n in names if vis and (label := vis.label(n))]
+        sections = [labels.sections[team.casefold()]] if team else [labels.sections[n] for n in folded if n in labels.sections]
+        # The main issue goes in the first section's team; sections from other teams can't be put on it.
+        main_team = sections[0][0].key if sections else settings.writers_team_key
         pitches.append(
             Pitch(
                 thread_id=int(thread["id"]),
                 title=thread["name"],
-                wri_labels=wri_labels,
-                vis_labels=vis_labels,
-                deferred=ACCEPTED_TAG not in folded,
+                team_key=main_team,
+                section_labels=[label.name for t, label in sections if t.key == main_team],
+                visual_labels=[labels.visuals[n][1].name for n in folded if n in labels.visuals],
+                deferred=accepted not in folded,
             )
         )
     return pitches
 
 
 def pitch_summary(pitch: Pitch) -> str:
-    parts = [" + ".join(pitch.wri_labels) or "No section tag"]
-    if pitch.vis_labels:
-        parts.append(" + ".join(pitch.vis_labels))
+    parts = [" + ".join(pitch.section_labels) or "No section tag"]
+    if pitch.visual_labels:
+        parts.append(" + ".join(pitch.visual_labels))
     if pitch.deferred:
         parts.append("deferred")
     return " · ".join(parts)
@@ -269,17 +334,19 @@ async def run_accept(ctx: Context, interaction: Interaction, project_name: str, 
         if project is None:
             await ctx.bot.edit_status(interaction, f"There's no open Linear project called \"{project_name}\".")
             return
-        if WRI not in workspace.teams:
-            await ctx.bot.edit_status(interaction, f"Linear has no {WRI} team to put pitches in.")
+        if ctx.settings.writers_team_key not in workspace.teams:
+            await ctx.bot.edit_status(interaction, f"Linear has no {ctx.settings.writers_team_key} team for untagged pitches.")
             return
-        if team and workspace.teams[WRI].label(team) is None:
-            await ctx.bot.edit_status(interaction, f"\"{team}\" isn't a {WRI} label in Linear.")
+        labels = accept_labels(ctx.settings, workspace)
+        if team and team.casefold() not in labels.sections:
+            await ctx.bot.edit_status(interaction, f"\"{team}\" isn't one of the /accept sections.")
             return
 
         channel_id = ctx.settings.pitches_channel_id
         guild_id, tags = await ctx.bot.forum(channel_id)
-        threads = await ctx.bot.forum_threads(channel_id, guild_id, since=datetime.now(UTC) - PITCH_WINDOW)
-        pitches = find_pitches(workspace, threads, tags, await ctx.records.thread_ids(), team)
+        since = datetime.now(UTC) - timedelta(days=ctx.settings.pitch_window_days)
+        threads = await ctx.bot.forum_threads(channel_id, guild_id, since=since)
+        pitches = find_pitches(ctx.settings, labels, threads, tags, await ctx.records.thread_ids(), team)
         scope = f" tagged {team}" if team else ""
         if not pitches:
             await ctx.bot.edit_status(interaction, f"No accepted pitches{scope} are waiting for issues.")
@@ -300,8 +367,9 @@ async def run_accept(ctx: Context, interaction: Interaction, project_name: str, 
             f"Ticked pitches become issues in **{project.name}**. Deferred ones start unticked; "
             "anything left unticked stays in the queue for a later /accept.",
         ]
-        if any(p.vis_labels for p in shown) and VIS not in project.team_keys:
-            lines.append(f"⚠️ {project.name} doesn't include the {VIS} team, so photo/graphic sub-issues won't be added to it.")
+        needed = {p.team_key for p in shown} | {labels.visuals[v.casefold()][0].key for p in shown for v in p.visual_labels}
+        if outside := sorted(needed - set(project.team_keys)):
+            lines.append(f"⚠️ {project.name} doesn't include the {', '.join(outside)} team, so their issues won't be added to it.")
         await show_review(ctx, interaction, draft, content="\n".join(lines), noun="Pitches", confirm="Create issues")
     except LinearNotConnectedError:
         await report_failure(ctx, interaction, f"Linear isn't connected yet. {LINEAR_REAPPROVE}")
@@ -313,11 +381,18 @@ async def run_accept(ctx: Context, interaction: Interaction, project_name: str, 
         await report_failure(ctx, interaction, "Something went wrong gathering pitches.")
 
 
-async def create_pitch_issues(ctx: Context, workspace: Workspace, project: LinearProject, guild_id: int, pitch: Pitch) -> str:
-    """Create a pitch's WRI issue and VIS sub-issues, record them, and link them in its thread. Returns a summary line."""
+async def create_pitch_issues(
+    ctx: Context, workspace: Workspace, labels: AcceptLabels, project: LinearProject, guild_id: int, pitch: Pitch
+) -> str:
+    """Create a pitch's main issue and visual sub-issues, record them, and link them in its thread. Returns a summary line."""
     if await ctx.records.get(pitch.thread_id):
         return f"• {pitch.title}: skipped, it was already handled"
-    wri, vis = workspace.teams[WRI], workspace.teams.get(VIS)
+    main_team = workspace.teams.get(pitch.team_key)
+    if main_team is None:
+        return f"• ⚠️ {pitch.title}: Linear has no {pitch.team_key} team, so nothing was created"
+    problems = []
+    if main_team.key not in project.team_keys:
+        problems.append(f"not added to {project.name}, which doesn't include {main_team.key}")
     url = discordbot.thread_url(guild_id, pitch.thread_id)
     try:
         description = discordbot.pitch_description(await ctx.bot.starter_message(pitch.thread_id), url)
@@ -326,11 +401,11 @@ async def create_pitch_issues(ctx: Context, workspace: Workspace, project: Linea
         return f"• ⚠️ {pitch.title}: couldn't read the Discord post, so nothing was created"
     try:
         main_issue = await ctx.linear.create_issue(
-            team_id=wri.id,
+            team_id=main_team.id,
             title=pitch.title,
             description=description,
-            label_ids=[label.id for name in pitch.wri_labels if (label := wri.label(name))],
-            project_id=project.id,
+            label_ids=[label.id for name in pitch.section_labels if (label := main_team.label(name))],
+            project_id=project.id if main_team.key in project.team_keys else None,
         )
     except Exception:
         log.exception("could not create issue for pitch %s", pitch.thread_id)
@@ -338,23 +413,23 @@ async def create_pitch_issues(ctx: Context, workspace: Workspace, project: Linea
 
     # Recorded as soon as the main issue exists, so a failure below can't lead a re-run to duplicate it.
     record = AcceptRecord(project=project.name, issues=[main_issue])
-    problems = []
     try:
         await ctx.records.save(pitch.thread_id, record)
     except Exception:
         log.exception("could not record issues for pitch %s", pitch.thread_id)
         problems.append("couldn't record it, so a later /accept may list it again")
-    for name in pitch.vis_labels:
-        label = vis.label(name) if vis else None
-        if label is None:
-            problems.append(f"no {VIS} label {name}")
+    for name in pitch.visual_labels:
+        hit = labels.visuals.get(name.casefold())
+        if hit is None:
+            problems.append(f"no Linear label {name}")
             continue
+        team, label = hit
         try:
             sub_issue = await ctx.linear.create_issue(
-                team_id=vis.id,
+                team_id=team.id,
                 title=pitch.title,
                 label_ids=[label.id],
-                project_id=project.id if VIS in project.team_keys else None,
+                project_id=project.id if team.key in project.team_keys else None,
                 parent_id=main_issue.id,
             )
             record.issues.append(sub_issue)
@@ -377,16 +452,17 @@ async def create_accepted_issues(ctx: Context, interaction: Interaction, draft: 
     try:
         workspace = await ctx.linear.workspace()
         project = workspace.project(draft.project)
-        if project is None or WRI not in workspace.teams:
-            await ctx.bot.edit_status(interaction, f"The Linear project \"{draft.project}\" or the {WRI} team is gone. Nothing was created.")
+        if project is None:
+            await ctx.bot.edit_status(interaction, f"The Linear project \"{draft.project}\" is gone. Nothing was created.")
             return
+        labels = accept_labels(ctx.settings, workspace)
         guild_id, _ = await ctx.bot.forum(ctx.settings.pitches_channel_id)
         pitches = [draft.pitches[i] for i in draft.selected]
         lines = []
         for n, pitch in enumerate(pitches, start=1):
             # Also strips the review components, so the buttons can't be pressed again mid-run.
             await ctx.bot.edit_status(interaction, f"Creating issues in **{project.name}**… {n}/{len(pitches)}")
-            lines.append(await create_pitch_issues(ctx, workspace, project, guild_id, pitch))
+            lines.append(await create_pitch_issues(ctx, workspace, labels, project, guild_id, pitch))
         await ctx.bot.edit_status(interaction, f"**Created issues in {project.name}:**\n" + "\n".join(lines))
     except Exception:
         log.exception("/accept creation failed for %r", draft.project)
@@ -394,7 +470,7 @@ async def create_accepted_issues(ctx: Context, interaction: Interaction, draft: 
 
 
 async def run_create_project(ctx: Context, interaction: Interaction, text: str) -> None:
-    """Create a newspaper issue's Linear project, shared by WRI and VIS, and offer it to /accept."""
+    """Create a newspaper issue's Linear project, shared by every team /accept creates issues in."""
     try:
         if not await ctx.linear.can_create_projects():
             await ctx.bot.edit_status(interaction, f"MercBot doesn't have write access to Linear, so it can't create projects. {LINEAR_REAPPROVE}")
@@ -405,22 +481,23 @@ async def run_create_project(ctx: Context, interaction: Interaction, text: str) 
             return
         name = f"{when:%B} {when.day}"
         workspace = await ctx.linear.workspace()
-        missing = [key for key in (WRI, VIS) if key not in workspace.teams]
-        if missing:
-            await ctx.bot.edit_status(interaction, f"Linear has no {' or '.join(missing)} team.")
+        teams = accept_labels(ctx.settings, workspace).teams()
+        for key in (ctx.settings.writers_team_key, ctx.settings.visuals_team_key):
+            if key in workspace.teams:
+                teams.setdefault(key, workspace.teams[key])
+        if not teams:
+            await ctx.bot.edit_status(interaction, "None of the configured Linear teams exist.")
             return
         if existing := workspace.project(name):
             await ctx.bot.edit_status(interaction, f"There's already an open project called **{existing.name}**.")
             return
-        project = await ctx.linear.create_project(
-            name=name, team_ids=[workspace.teams[WRI].id, workspace.teams[VIS].id], target_date=when
-        )
+        project = await ctx.linear.create_project(name=name, team_ids=[t.id for t in teams.values()], target_date=when)
         # So the new date shows up in /accept right away.
         await ctx.sync.sync()
         await ctx.bot.edit_status(
             interaction,
-            f"Created [{project.name}]({project.url}) for {WRI} and {VIS}, due {when:%A, %B} {when.day}, {when.year}. "
-            "It's now a /accept date.",
+            f"Created [{project.name}]({project.url}) for {' and '.join(sorted(teams))}, "
+            f"due {when:%A, %B} {when.day}, {when.year}. It's now a /accept date.",
         )
     except LinearNotConnectedError:
         await report_failure(ctx, interaction, f"Linear isn't connected yet. {LINEAR_REAPPROVE}")
@@ -490,7 +567,7 @@ def create_app(settings: Settings, linear: LinearClient, store: KVStore) -> Fast
             linear=linear,
             drafts=ReviewDraftStore(store),
             records=AcceptRecordStore(store),
-            sync=CommandSync(bot, linear, settings.timezone),
+            sync=CommandSync(bot, linear, settings),
         )
         app.state.ctx = ctx
         await ctx.sync.sync(force=True)

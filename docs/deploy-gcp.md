@@ -118,11 +118,34 @@ between them, and the bot on whichever one isn't running would make Discord comm
 6. After a day, check **Billing → Reports** shows $0.00. If anything shows a charge (the VM's
    public IP is the most likely candidate), it'll be listed there.
 
+## Automatic deploys
+
+The server checks GitHub every minute and deploys new commits on `main` by itself: it pulls,
+installs any changed requirements and restarts the bot. It only fast-forwards, so if the server's
+checkout has local edits it logs an error and leaves the running bot alone. Nothing on GitHub needs
+access to the server.
+
+**(server)** Turn it on once:
+
+```sh
+sudo install -m 644 /opt/mercbot/deploy/mercbot-autodeploy.service /opt/mercbot/deploy/mercbot-autodeploy.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now mercbot-autodeploy.timer
+```
+
+Check it with `systemctl list-timers mercbot-autodeploy.timer` (next run within a minute) and
+`journalctl -u mercbot-autodeploy -n 20 --no-pager` (a `deploying …` line after each push).
+
+The deploy script is read from the checkout, so changes to it ship like any other code. Changes to
+the `.service`/`.timer` files themselves need the install commands above re-run. New settings still
+need adding to the server's `.env` by hand (before pushing the code that uses them).
+
 ## Day to day
 
 | Task | Command (server) |
 | --- | --- |
-| Deploy new code (after pushing to GitHub) | `sh /opt/mercbot/deploy/update.sh` |
+| Deploy new code | Push to `main`; it's live within a minute. To deploy right away: `sh /opt/mercbot/deploy/update.sh` |
+| See recent deploys | `journalctl -u mercbot-autodeploy -n 20 --no-pager` |
 | Watch the bot's logs | `journalctl -u mercbot -f` |
 | Restart the bot | `sudo systemctl restart mercbot` |
 | Edit secrets | `sudoedit /opt/mercbot/.env`, then restart |

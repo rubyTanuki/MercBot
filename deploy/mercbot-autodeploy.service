@@ -1,0 +1,8 @@
+[Unit]
+Description=Deploy MercBot if origin/main has new commits
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh /opt/mercbot/deploy/autodeploy.sh

@@ -51,7 +51,7 @@ see `.env.example` for them and their defaults.
 
 ## Deploying
 
-See [docs/deploy-gcp.md](docs/deploy-gcp.md) for running it on a free Google Cloud VM.
+See [docs/deploy-ubuntu.md](docs/deploy-ubuntu.md) for running it on an Ubuntu server.
 
 ## Connecting Linear
 
@@ -62,7 +62,7 @@ only if the app is revoked in Linear or the bot reports that Linear isn't connec
 access.
 
 1. Make sure the Linear OAuth app's callback URLs include
-   `https://discord-dev.tostr.ai/mercbot/linear/callback`.
+   `<PUBLIC_BASE_URL>/mercbot/linear/callback` (e.g. `https://discord-dev.tostr.ai/mercbot/linear/callback`).
 2. With `.env` pointing at the same KV namespace as the deployed bot, generate a link locally:
 
    ```sh

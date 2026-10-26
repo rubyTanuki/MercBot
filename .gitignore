@@ -2,3 +2,6 @@
 .env
 __pycache__/
 .venv/
+# uv's Python and cache, when the checkout is also the bot user's home (see docs/deploy-ubuntu.md).
+.local/
+.cache/

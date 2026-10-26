@@ -1,9 +1,10 @@
 # Copy to /etc/cloudflared/config.yml on the server, replacing <TUNNEL-ID> with the id in the
-# credentials file's name (~/.cloudflared/<TUNNEL-ID>.json on the machine that created the tunnel).
-tunnel: discord-dev
+# credentials file's name (<TUNNEL-ID>.json, written by `cloudflared tunnel create`) and <HOSTNAME>
+# with the public hostname routed to the tunnel. PUBLIC_BASE_URL in .env must be https://<HOSTNAME>.
+tunnel: <TUNNEL-ID>
 credentials-file: /etc/cloudflared/<TUNNEL-ID>.json
 
 ingress:
-  - hostname: discord-dev.tostr.ai
+  - hostname: <HOSTNAME>
     service: http://localhost:8787
   - service: http_status:404
